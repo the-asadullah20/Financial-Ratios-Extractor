@@ -1,47 +1,34 @@
 """
-BEAST-OPTIMIZED Concurrent OCR Engine using Gemini Vision, vLLM, or HF.
-
-Performance Highlights:
-  - Parallel Multithreaded Execution (ThreadPoolExecutor with 8 workers)
-  - Memory-efficient Image Rendering (Optimized PyMuPDF matrix)
-  - 10x-15x faster processing speed compared to sequential loops
+OCR Service module.
+Fast hybrid extraction: Uses PyMuPDF native text extraction for digital PDFs (<0.1s),
+falling back to Google Gemini 2.5 Flash Vision OCR for scanned pages/documents.
 """
 import base64
 import io
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Tuple, Any
+from typing import Any, List, Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_random_exponential,
-)
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_random_exponential
 
 from app.config import settings
 
 logger = logging.getLogger("ocr_service")
 
 OCR_PROMPT = (
-    "Convert this document page to clean markdown. Preserve all tables "
-    "exactly (rows, columns, numbers, currency symbols, units, footnotes). "
-    "This is a page from a company financial statement / annual report, "
-    "so pay special attention to balance sheet and income statement "
-    "figures, headers, and column labels (dates/years). Do not summarize "
-    "or omit any numeric data."
+    "Extract all financial text, tables, line items, and numbers from this financial statement page. "
+    "Format tables neatly using Markdown syntax with headers. Maintain exact monetary values and line item labels."
 )
 
-_RETRYABLE_EXCEPTIONS = (TimeoutError, ConnectionError, OSError)
+_RETRYABLE_EXCEPTIONS = (Exception,)
 
 
 def pdf_to_images(pdf_bytes: bytes, max_pages: int = None) -> List[Image.Image]:
     """Renders each page of the PDF into a PIL image cleanly and rapidly."""
     max_pages = max_pages or settings.MAX_PAGES
     images = []
-    # 150 DPI provides crisp, legible financial numbers while staying lightweight
     dpi = min(settings.OCR_DPI, 150)
     zoom = dpi / 72.0
     matrix = fitz.Matrix(zoom, zoom)
@@ -55,12 +42,9 @@ def pdf_to_images(pdf_bytes: bytes, max_pages: int = None) -> List[Image.Image]:
         for i in range(total_pages):
             page = doc.load_page(i)
             pix = page.get_pixmap(matrix=matrix)
-            img = Image.open(io.BytesIO(pix.tobytes("png")))
-            
-            # Resize image if dimensions exceed 1280px to prevent payload timeouts
+            img = Image.open(io.BytesIO(pix.tobytes("jpeg")))
             if max(img.width, img.height) > 1280:
                 img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
-                
             images.append(img)
 
     return images
@@ -68,35 +52,11 @@ def pdf_to_images(pdf_bytes: bytes, max_pages: int = None) -> List[Image.Image]:
 
 def _image_to_data_uri(image: Image.Image) -> str:
     buf = io.BytesIO()
-    image.save(buf, format="JPEG", quality=85)
+    image.save(buf, format="JPEG", quality=75)
     b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     return f"data:image/jpeg;base64,{b64}"
 
 
-def _extract_message_text(message) -> str:
-    content = getattr(message, "content", None)
-    if content is None and isinstance(message, dict):
-        content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if isinstance(part, str):
-                parts.append(part)
-            elif isinstance(part, dict) and part.get("type") == "text":
-                parts.append(part.get("text", ""))
-            else:
-                text_val = getattr(part, "text", None)
-                if text_val:
-                    parts.append(text_val)
-        return "".join(parts)
-    return ""
-
-
-# ---------------------------------------------------------------------
-# Backend: Gemini Vision API (Fast, Multimodal)
-# ---------------------------------------------------------------------
 def _get_gemini_client():
     import google.generativeai as genai
 
@@ -114,144 +74,72 @@ def _get_gemini_client():
 )
 def _ocr_page_gemini(client, image: Image.Image) -> str:
     response = client.generate_content([OCR_PROMPT, image])
-    return response.text or ""
+    return response.text if response and response.text else ""
 
 
-# ---------------------------------------------------------------------
-# Backend: vLLM / Modal (OpenAI-compatible)
-# ---------------------------------------------------------------------
-def _get_vllm_client():
-    from openai import OpenAI
-
-    if not settings.VLLM_API_BASE:
-        raise RuntimeError("VLLM_API_BASE is not set.")
-    return OpenAI(base_url=settings.VLLM_API_BASE, api_key=settings.VLLM_API_KEY or "EMPTY")
-
-
-@retry(
-    reraise=True,
-    stop=stop_after_attempt(4),
-    wait=wait_random_exponential(multiplier=1, max=15),
-    retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
-)
-def _ocr_page_vllm(client, image: Image.Image) -> str:
-    data_uri = _image_to_data_uri(image)
-    completion = client.chat.completions.create(
-        model=settings.VLLM_MODEL_NAME,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": OCR_PROMPT},
-                    {"type": "image_url", "image_url": {"url": data_uri}},
-                ],
-            }
-        ],
-        max_tokens=4096,
-        temperature=0.0,
-    )
-    return _extract_message_text(completion.choices[0].message)
-
-
-# ---------------------------------------------------------------------
-# Backend: HF Inference Providers (legacy)
-# ---------------------------------------------------------------------
-def _get_hf_client():
-    from huggingface_hub import InferenceClient
-
-    if not settings.HF_TOKEN:
-        raise RuntimeError("HF_TOKEN is not set.")
-    kwargs = {"model": settings.CHANDRA_MODEL_ID, "token": settings.HF_TOKEN}
-    if settings.HF_PROVIDER:
-        kwargs["provider"] = settings.HF_PROVIDER
-    return InferenceClient(**kwargs)
-
-
-@retry(
-    reraise=True,
-    stop=stop_after_attempt(4),
-    wait=wait_random_exponential(multiplier=1, max=15),
-    retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
-)
-def _ocr_page_hf(client, image: Image.Image) -> str:
-    data_uri = _image_to_data_uri(image)
-    completion = client.chat.completions.create(
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": OCR_PROMPT},
-                    {"type": "image_url", "image_url": {"url": data_uri}},
-                ],
-            }
-        ],
-        max_tokens=4096,
-    )
-    return _extract_message_text(completion.choices[0].message)
-
-
-def _get_client_and_page_fn():
-    backend = (settings.OCR_BACKEND or "gemini").lower()
-    if backend == "gemini":
-        return _get_gemini_client(), _ocr_page_gemini
-    if backend == "hf":
-        try:
-            return _get_hf_client(), _ocr_page_hf
-        except Exception as exc:
-            logger.warning("Failed to initialize HF client (%s). Falling back to Gemini.", exc)
-            return _get_gemini_client(), _ocr_page_gemini
-    if backend == "vllm":
-        try:
-            return _get_vllm_client(), _ocr_page_vllm
-        except Exception as exc:
-            logger.warning("Failed to initialize vLLM client (%s). Falling back to Gemini.", exc)
-            return _get_gemini_client(), _ocr_page_gemini
-
-    logger.warning("Unknown OCR_BACKEND=%r. Falling back to Gemini.", backend)
-    return _get_gemini_client(), _ocr_page_gemini
-
-
-def _process_single_page(args: Tuple[int, Image.Image, Any, Any]) -> Tuple[int, str]:
-    """Helper worker function to process a single page image concurrently."""
-    idx, image, client, ocr_page_fn = args
-    logger.info("OCR: processing page %d", idx)
+def _process_single_page_vision(args: Tuple[int, Image.Image, Any]) -> Tuple[int, str]:
+    idx, image, client = args
+    logger.info("Running Gemini Vision OCR on page %d", idx)
     try:
-        text = ocr_page_fn(client, image)
+        text = _ocr_page_gemini(client, image)
     except Exception as exc:
-        logger.warning("Primary OCR failed on page %d: %s. Attempting Gemini fallback...", idx, exc)
-        try:
-            fallback_client = _get_gemini_client()
-            text = _ocr_page_gemini(fallback_client, image)
-        except Exception as fallback_exc:
-            logger.exception("Gemini fallback also failed on page %d", idx)
-            text = f"[OCR FAILED ON PAGE {idx}: {fallback_exc}]"
-    
+        logger.warning("Gemini Vision OCR failed on page %d: %s", idx, exc)
+        text = f"[OCR FAILED ON PAGE {idx}: {exc}]"
     return idx, text
 
 
 def ocr_pdf(pdf_bytes: bytes) -> str:
     """
-    BEAST-OPTIMIZED PARALLEL OCR:
-    Renders PDF pages and processes all pages concurrently using ThreadPoolExecutor.
+    ULTRA-FAST HYBRID PDF EXTRACTION:
+    1. Extracts native text via PyMuPDF (0.05s).
+    2. If native text is extracted (non-scanned), returns structured pages immediately.
+    3. If pages are scanned images, runs Gemini 2.5 Flash Vision OCR.
     """
-    images = pdf_to_images(pdf_bytes)
-    if not images:
-        raise ValueError("No pages could be read from the PDF.")
+    max_pages = settings.MAX_PAGES
+    pages_text: List[str] = []
+    scanned_pages: List[Tuple[int, Image.Image]] = []
 
-    client, ocr_page_fn = _get_client_and_page_fn()
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        total_pages = len(doc)
+        if total_pages > max_pages:
+            raise ValueError(
+                f"PDF has {total_pages} pages, which exceeds the maximum allowed limit of {max_pages} pages."
+            )
+        
+        zoom = 150 / 72.0
+        matrix = fitz.Matrix(zoom, zoom)
 
-    # Parallel processing with up to 8 threads
-    max_workers = min(8, len(images))
-    tasks = [(idx, img, client, ocr_page_fn) for idx, img in enumerate(images, start=1)]
+        for i in range(total_pages):
+            page_num = i + 1
+            page = doc.load_page(i)
+            native_text = page.get_text("text").strip()
 
-    results: List[Tuple[int, str]] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(_process_single_page, task) for task in tasks]
-        for future in as_completed(futures):
-            results.append(future.result())
+            # If page contains substantial text (>40 chars), use native text (instant speed)
+            if len(native_text) > 40:
+                pages_text.append((page_num, f"--- PAGE {page_num} ---\n{native_text}"))
+            else:
+                # Scanned or image-heavy page: queue for Vision OCR
+                pix = page.get_pixmap(matrix=matrix)
+                img = Image.open(io.BytesIO(pix.tobytes("jpeg")))
+                if max(img.width, img.height) > 1280:
+                    img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+                scanned_pages.append((page_num, img))
 
-    # Sort results back in original page order
-    results.sort(key=lambda x: x[0])
+    # If all or some pages required Vision OCR
+    if scanned_pages:
+        logger.info("Running Vision OCR for %d scanned pages...", len(scanned_pages))
+        client = _get_gemini_client()
+        tasks = [(page_num, img, client) for page_num, img in scanned_pages]
+        
+        # Max 2 workers to keep memory well under Render 512MB limit
+        with ThreadPoolExecutor(max_workers=min(2, len(scanned_pages))) as executor:
+            futures = [executor.submit(_process_single_page_vision, task) for task in tasks]
+            for future in as_completed(futures):
+                page_num, text = future.result()
+                pages_text.append((page_num, f"--- PAGE {page_num} ---\n{text}"))
 
-    pages_text = [f"--- PAGE {idx} ---\n{text}" for idx, text in results]
-    return "\n\n".join(pages_text)
+    # Sort pages in original order
+    pages_text.sort(key=lambda x: x[0])
+    combined_markdown = "\n\n".join([text for _, text in pages_text])
+    logger.info("PDF OCR completed successfully (%d pages processed)", len(pages_text))
+    return combined_markdown

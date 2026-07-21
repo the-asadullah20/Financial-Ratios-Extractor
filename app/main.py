@@ -1,16 +1,15 @@
 """
 FastAPI Server - Financial Ratios Extractor Architecture Pipeline
 Integrates: PDF Parsing -> Qdrant Vector Storage -> LangGraph AI Agent (Grep/Semantic/Math tools) -> LLM Structuring -> Evaluation Engine.
-Serves interactive Web UI at root (/) and API docs at (/docs).
+Automatically redirects root (/) to FastAPI Swagger Documentation (/docs).
 """
 import logging
 import os
 import time
 import uuid
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, Query
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.config import settings
 from app.ocr_service import ocr_pdf
@@ -19,7 +18,7 @@ from app.storage.vector_store import vector_store
 from app.ratio_config import get_active_ratio_configs
 from app.agent.financial_agent import run_financial_agent
 from app.structuring import structure_financial_ratios
-from app.eval.evaluator import run_evaluation_benchmark, evaluate_extracted_ratios
+from app.eval.evaluator import run_evaluation_benchmark
 from app.utils import save_json_output
 
 logging.basicConfig(level=logging.INFO)
@@ -38,19 +37,11 @@ app = FastAPI(
     version="2.1.0",
 )
 
-# Mount static web UI files
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-if os.path.exists(static_dir):
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
 
 @app.get("/")
-def serve_ui():
-    """Serves the interactive Financial Ratios Extractor Web UI."""
-    index_path = os.path.join(static_dir, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"message": "Financial Ratios Extractor API is running. Visit /docs for API documentation."}
+def redirect_to_docs():
+    """Redirects root to interactive OpenAPI Swagger documentation."""
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health")

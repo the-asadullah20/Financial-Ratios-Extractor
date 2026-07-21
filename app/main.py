@@ -1,6 +1,7 @@
 """
 FastAPI Server - Financial Ratios Extractor Architecture Pipeline
 Integrates: PDF Parsing -> Qdrant Vector Storage -> LangGraph AI Agent (Grep/Semantic/Math tools) -> LLM Structuring -> Evaluation Engine.
+Serves interactive Web UI at root (/) and API docs at (/docs).
 """
 import logging
 import os
@@ -8,7 +9,8 @@ import time
 import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.ocr_service import ocr_pdf
@@ -26,13 +28,29 @@ logger = logging.getLogger("main")
 app = FastAPI(
     title="Financial Ratios Extractor & Evaluation Engine",
     description=(
-        "Production multi-stage agentic pipeline for financial document extraction. "
-        "Converts PDF documents to Markdown, indexes semantic chunks in Qdrant Vector DB, "
-        "runs a LangGraph ReAct agent with Grep, Retrieval, and Math tools to compute ratios, "
-        "and formats canonical structured financial ratio outputs."
+        "Production multi-stage agentic pipeline for financial document extraction.\n"
+        "1. Parallel PDF & Vision OCR Engine: PyMuPDF multithreaded rendering with Gemini 2.5 Flash Vision OCR.\n"
+        "2. Real-Time Cloud Storage & Vector DB: Asynchronous GCS Bucket sync & Qdrant Cloud Vector DB chunk indexing.\n"
+        "3. Tooling Layer: Mirage keyword search, vector similarity search, and exact Python financial math calculator.\n"
+        "4. LangGraph AI Agent: ReAct deep agent graph orchestrating tool execution and line-item extraction across all pages.\n"
+        "5. LLM Structuring & Evaluation Engine: Canonical JSON schema formatting & automated ground-truth accuracy benchmarking."
     ),
-    version="2.0.0",
+    version="2.1.0",
 )
+
+# Mount static web UI files
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+@app.get("/")
+def serve_ui():
+    """Serves the interactive Financial Ratios Extractor Web UI."""
+    index_path = os.path.join(static_dir, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Financial Ratios Extractor API is running. Visit /docs for API documentation."}
 
 
 @app.get("/health")
@@ -62,12 +80,12 @@ def get_ratios_config():
 @app.post("/process-pdf")
 async def process_pdf(file: UploadFile = File(...)):
     """
-    Full end-to-end Agentic Pipeline:
-    1. Parses PDF document into raw Markdown (Chandra/Gemini OCR).
-    2. Saves raw Markdown and indexes semantic chunks into Qdrant Vector DB.
-    3. Runs LangGraph AI Agent using Mirage Grep, Semantic Retrieval, and Math tools.
-    4. Computes exact ratios using deterministic Python math tools.
-    5. Formats structured JSON output and saves to disk.
+    Full 5-Step Agentic Pipeline:
+    1. Parallel PDF & Vision OCR Engine: Renders PDF and runs Gemini 2.5 Flash Vision OCR across all pages.
+    2. Real-Time Cloud Storage & Vector DB: Asynchronous GCS Bucket sync & Qdrant Cloud Vector DB chunk indexing.
+    3. Tooling Layer: Mirage keyword search, vector similarity search, and exact Python financial math calculator.
+    4. LangGraph AI Agent: ReAct deep agent graph orchestrating tool execution and line-item extraction across all pages.
+    5. LLM Structuring & Evaluation Engine: Canonical JSON schema formatting & automated ground-truth accuracy benchmarking.
     """
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a .pdf file.")
@@ -113,7 +131,7 @@ async def process_pdf(file: UploadFile = File(...)):
 
     structured = structure_financial_ratios(extracted_stmt, computed_ratios, unstructured_narrative)
 
-    # 5. Save JSON Output to Disk
+    # 5. Save JSON Output to Disk & Cloud Storage
     company_name = structured.get("company_name") or "unknown_company"
     saved_path = save_json_output(structured, company_name)
 

@@ -41,7 +41,9 @@ def pdf_to_images(pdf_bytes: bytes, max_pages: int = None) -> List[Image.Image]:
     """Renders each page of the PDF into a PIL image cleanly and rapidly."""
     max_pages = max_pages or settings.MAX_PAGES
     images = []
-    zoom = settings.OCR_DPI / 72.0  # Resolution scaling
+    # 150 DPI provides crisp, legible financial numbers while staying lightweight
+    dpi = min(settings.OCR_DPI, 150)
+    zoom = dpi / 72.0
     matrix = fitz.Matrix(zoom, zoom)
 
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
@@ -54,6 +56,11 @@ def pdf_to_images(pdf_bytes: bytes, max_pages: int = None) -> List[Image.Image]:
             page = doc.load_page(i)
             pix = page.get_pixmap(matrix=matrix)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
+            
+            # Resize image if dimensions exceed 1280px to prevent payload timeouts
+            if max(img.width, img.height) > 1280:
+                img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+                
             images.append(img)
 
     return images

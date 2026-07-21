@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+output/*
+!output/.gitkeep
+uploads_tmp/*
+!uploads_tmp/.gitkeep
+raw_markdown/*
+!raw_markdown/.gitkeep
+qdrant_db/
+.lock

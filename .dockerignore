@@ -1,0 +1,15 @@
+.git
+.gitignore
+.dockerignore
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+output/
+uploads_tmp/
+raw_markdown/
+qdrant_db/
+.idea/
+.vscode/

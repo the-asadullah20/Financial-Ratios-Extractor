@@ -1,0 +1,21 @@
+{
+  "company_name": "Nike, Inc.",
+  "ticker": "NKE",
+  "country": "US",
+  "currency": "USD",
+  "statement_data": {
+    "Current Assets": {"2025": 23362.0, "2024": 25382.0},
+    "Current Liabilities": {"2025": 10566.0, "2024": 10593.0},
+    "Total Assets": {"2025": 36579.0, "2024": 38110.0},
+    "Total Liabilities": {"2025": 23366.0, "2024": 23680.0},
+    "Revenue": {"2025": 46309.0, "2024": 51362.0},
+    "Gross Profit": {"2025": 19790.0, "2024": 22887.0},
+    "Net Income": {"2025": 3219.0, "2024": 5700.0}
+  },
+  "ratios": {
+    "Current Ratio": {"2025": 2.2111, "2024": 2.3961, "source": "Calculated (Current Assets / Current Liabilities)"},
+    "Debt Ratio": {"2025": 0.6388, "2024": 0.6214, "source": "Calculated (Total Liabilities / Total Assets)"},
+    "Gross Margin": {"2025": 0.4273, "2024": 0.4456, "source": "Calculated (Gross Profit / Revenue)"},
+    "Net Profit Margin": {"2025": 0.0695, "2024": 0.1110, "source": "Calculated (Net Income / Revenue)"}
+  }
+}

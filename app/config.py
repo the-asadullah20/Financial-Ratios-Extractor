@@ -51,6 +51,11 @@ class Settings:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     S3_ENDPOINT_URL: str = os.getenv("S3_ENDPOINT_URL", "")  # Optional: for R2 / MinIO / Custom S3
 
+    # --- RabbitMQ Task Queue ---
+    RABBITMQ_URL: str = os.getenv("RABBITMQ_URL", "")
+    RABBITMQ_QUEUE: str = os.getenv("RABBITMQ_QUEUE", "pdf_tasks")
+
+
 
 settings = Settings()
 

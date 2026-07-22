@@ -40,6 +40,22 @@ app = FastAPI(
 )
 
 
+@app.on_event("startup")
+def startup_event():
+    if settings.RABBITMQ_URL:
+        import threading
+        from app.worker import main as start_worker
+        
+        def run_worker_thread():
+            try:
+                start_worker()
+            except Exception as exc:
+                logger.error("RabbitMQ background worker thread failed to run: %s", exc)
+
+        logger.info("Spawning background RabbitMQ task consumer thread...")
+        threading.Thread(target=run_worker_thread, daemon=True).start()
+
+
 @app.get("/")
 def redirect_to_docs():
     """Redirects root to interactive OpenAPI Swagger documentation."""
